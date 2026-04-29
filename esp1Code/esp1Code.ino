@@ -5,14 +5,24 @@
 #include <DHT.h>
 #include <Adafruit_Sensor.h>
 #include <Wire.h>
+#include <AccelStepper.h>
 
 #define DHTPIN 10 // S3
 #define DHTTYPE DHT22 // AM2302
-
+#define StepperEnable 2 // D4
+#define BeleuchtungsPin 0 // D3
+#define IN1 14 // D5
+#define IN2 12 // D6
+#define IN3 13 // D7
+#define IN4 15 // D8
+#define Endlage 9 // S2
+bool linksLauf = false;
+bool rechtsLauf = false;
 // Instanzen
 WiFiClient espClient;
 PubSubClient client(espClient);
 DHT dht(DHTPIN, DHTTYPE);
+AccelStepper stepper(AccelStepper::HALF4WIRE, IN1, IN2, IN3, IN4);
 
 unsigned long lastMsg; // Zeitstempel für millis() später
 const int ldr = A0; // Analoger Input des Light Dependent Resistors (Photowiderstand), mehr Licht = höherer analoger Wert
@@ -44,6 +54,11 @@ void setup() {
   client.setServer(mqtt_server, 1883);
   // DHT Begin und sowas
   dht.begin();
+  pinMode(BeleuchtungsPin, OUTPUT);
+  digitalWrite(BeleuchtungsPin, LOW);
+  pinMode(StepperEnable, OUTPUT);
+  digitalWrite(StepperEnable, LOW);
+  pinMode(Endlage, INPUT);
 }
 
 void loop() {
@@ -94,7 +109,22 @@ void loop() {
       sprintf(msg_out, "%f", luftfeuchtigkeit);
       client.publish("gewaechshaus/luftfeuchtigkeit", msg_out);
     }
-  }
+    bool endlagenBool = false;
+    endlagenBool = digitalRead(Endlage);
+    if (endlagenBool == true) {
+      Serial.print("Endlage: ");
+      Serial.println(endlagenBool);
+      // Konvertierung
+      char msg_out[1];
+      sprintf(msg_out, "%b", endlagenBool);
+      client.publish("gewaechshaus/endlage", msg_out);
+    } else {
+      Serial.print("Endlage: ");
+      Serial.println(endlagenBool);
+      sprintf(msg_out, "%b", endlagenBool);
+      client.publish("gewaechshaus/endlage", msg_out);
+    }
+  }W
 
 }
 
