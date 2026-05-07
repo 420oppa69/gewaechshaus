@@ -1,72 +1,99 @@
-#include <ESP8266WiFi.h>
-#include <PubSubClient.h>
-#include <WiFiUdp.h>
-#include <ArduinoOTA.h>
-#include <Wire.h>
-#include "creds.h"
-#include "components.h"
+/*
+Gewaechshaus - Bewaesserungssteuerung v0.9
+Liest Bodenfeuchte- und Fuellstandssensor ein
+Steuert LED-Fuellstandsanzeige
+Bei zu geringer Bodenfeuchte und ausreichendem Wasserstand wird bewaessert
+Sensorwerte werden per MQTT geteilt
 
-#define levelCheckInterval 250
-#define publishInterval 5000
-#define minWaterLevel 15
-#define minSoilHum 250
+created by:
+Henri Geuer
+BBS Brinkstraße - EPV41 - LF7
+Herr Kahmann
 
-uint32_t lastLevelCheckTime = 0;
-uint32_t lastPublishTime = 0;
-uint16_t soilHumRead = 0;
-uint8_t waterLevel = 0;
-uint8_t waterDisplayLevel = 0;
+29.04.2026
+*/
+
+//Bibliotheken
+#include <ESP8266WiFi.h>  //WLAN
+#include <WiFiUdp.h>      
+#include <PubSubClient.h> //MQTT
+#include <ArduinoOTA.h>   //Other the Air updates
+#include <Wire.h>         //I2C Kommunikation
+#include "creds.h"        //Anmeldedaten für WLAN und MQTT-Broker
+#include "components.h"   //Eigene Bibliothek mit Klassen für alle Komponenten
+
+//Konfiguration
+#define levelCheckInterval 250   //Intervall zur Fuellstandsueberwachung des Wasserstandes
+#define publishInterval 5000    //Intervall zur Messung und veröffentlichung der Messwerte 
+#define minWaterLevel 15        //Wasserstand in %, bei dem die Pumpe deaktiviert wird
+#define maxSoilHum 1020          //Analogwert des Bodenfeuchtesensors, bei dessen Ueberschreitung ein Bewaesserungsvorgang ausgelöst wird
 
 
-WiFiClient espClient;
-PubSubClient client(espClient);
-LED debugLED(D4);
-waterLevelSensor waterLevelSensor(100);
-levelDisplay waterLevelDisplay(D5,D6,D7,D8,10);
-soilHumSensor soilHumSensor(A0);
-waterPump waterPump(D0);
+//Variablendeklaration und Definition
+uint32_t lastLevelCheckTime = 0;   //Zeitstempel fuer Wasserstandsueberwachung
+uint32_t lastPublishTime = 0;      //Zeitstempel fuer Messwertveroeffentlichung
+uint16_t soilHumRead = 0;         //Analogwert des Bodenfeuchtesensors
+uint8_t waterLevel = 0;           //Wasserstand in %
+uint8_t waterDisplayLevel = 0;    //Hoehe der Fuellstandsanzeige (0 -> Blinkend; 1-> erste LED leuchtet; ... ; 3 -> Alle LEDs leuchten )
+bool pumpStarted = false;
+
+//Instanzen
+WiFiClient espClient;                       //WLAN-Verbindung
+PubSubClient client(espClient);             //MQTT-Client
+LED debugLED(D8);                           //Debug - LED auf Platine
+waterLevelSensor waterLevelSensor(100);     //Fuellstandssensor
+levelDisplay waterLevelDisplay(10,12,13);   //Wasserstandsanzeige aus 3 LEDs
+soilHumSensor soilHumSensor(A0);            //Bodenfeuchtesensor
+waterPump waterPump(D0);                    //Wasserpumpe
+
 
 void setup() {
   Serial.begin(115200);
   delay(2000);
 
-  debugLED.setMode(2);
-  debugLED.setInterval(250);
-
+  //WLAN Verbindung aufbauen
   Serial.println("Verbinde mit Wlan...");
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
     delay(500);
     debugLED.update();
   }
+  //OTA einrichten
+  ArduinoOTA.setHostname("ESP8266_bewaesserung");
+  ArduinoOTA.setPassword("OTA");
+  ArduinoOTA.begin();
 
-  debugLED.setMode(1);
   Serial.print("Mit Wlan verbunden! IP Addresse: ");
   Serial.println(WiFi.localIP());
   
+  //MQTT-Client einrichten
   client.setServer(mqtt_server, 1883);
-  init_OTA();
-  Wire.begin();
+  client.setCallback(callback);
 
+  //Kommunikation mit Fuellstandssensor beginnen
+  Wire.begin();
 }
 
 void loop() {
+  //Verbindung mit MQTT-Server aufbauen
   if(!client.connected()) {
-    reconnect();
+    connect();
   }
-  ArduinoOTA.handle();
-  
+  //Normalbetrieb: LED blinkt mit 1 Hz
   debugLED.setMode(2);
   debugLED.setInterval(1000);
-  
-  //Check Waterlevel
+
+  //Wasserstand ueberpruefen
   if (millis()-lastLevelCheckTime > levelCheckInterval){
     waterLevel = waterLevelSensor.read();
+    //Wasserstand zu niedrig -> Pumpe deaktivieren
     if (waterLevel < minWaterLevel){
         waterDisplayLevel = 0;
         waterPump.disable();
       }
+    //Wasserstand ok -> Normalbetrieb
     else{
         waterDisplayLevel = map(waterLevel, minWaterLevel, 100, 1,5);
         waterPump.enable();
@@ -74,30 +101,45 @@ void loop() {
     waterLevelDisplay.setLevel(waterDisplayLevel);
   }
 
-  //Publish Data
+  //MQTT-Steuerrungssignal zuruecksetzen, wenn Pumpe gestartet wurde
+  if (pumpStarted== true){
+    client.publish("gewaechshaus/ctrl/pump", "0");
+    pumpStarted = false;
+  }
+
+  //Sensoren auslesen und Werte veroeffentlichen
   if (millis()-lastPublishTime > publishInterval){
     soilHumRead = soilHumSensor.read();
-    if (soilHumRead < minSoilHum){
-      waterPump.start(5000);
+    if (soilHumRead > maxSoilHum){
+      waterPump.start(1000);
     }
 
+    //Payload fuer Fuellstand erstellen
     char msg1_out[8];
     sprintf(msg1_out, "%d", waterLevel);
     client.publish("gewaechshaus/Fuellstand_Wassertank", msg1_out);
-    
+    Serial.print("Fuellstand: ");
+    Serial.println(waterLevel);
+
+    //Payload fuer Bodenfeuchte erstellen
     char msg2_out[8];
     sprintf(msg2_out, "%d", soilHumRead);
     // Und sendet hier Nachricht an Broker
     client.publish("gewaechshaus/bodenfeuchte", msg2_out);
+    Serial.print("Bodenfeuchte: ");
+    Serial.println(soilHumRead);
   }
   
+  //Handler fuer Instanzen
   waterPump.handle();  
   debugLED.update();
   waterLevelDisplay.update();
+  client.loop();
+  ArduinoOTA.handle();
 }
 
-
-void reconnect() {
+//Verbindung mit MQTT-Server aufbauen
+void connect() {
   while(!client.connected()) {
     Serial.println("");
     Serial.print("MQTT nicht verbunden, versuche zu verbinden... ");
@@ -107,6 +149,7 @@ void reconnect() {
     // Versuche zu verbinden
     if(client.connect(clientId.c_str(), mqtt_user, mqtt_pwd)) {
       Serial.println("Verbunden.");
+      client.subscribe("gewaechshaus/ctrl/pump");
     } else {
       Serial.print("Fehler, code=");
       Serial.print(client.state());
@@ -115,37 +158,12 @@ void reconnect() {
   }
 }
 
-void init_OTA(){
-  ArduinoOTA.onStart([]() {
-    String type;
-    if (ArduinoOTA.getCommand() == U_FLASH) {
-      type = "sketch";
-    } else {  // U_FS
-      type = "filesystem";
-    }
-    // NOTE: if updating FS this would be the place to unmount FS using FS.end()
-    Serial.println("Start updating " + type);
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) {
-      Serial.println("Auth Failed");
-    } else if (error == OTA_BEGIN_ERROR) {
-      Serial.println("Begin Failed");
-    } else if (error == OTA_CONNECT_ERROR) {
-      Serial.println("Connect Failed");
-    } else if (error == OTA_RECEIVE_ERROR) {
-      Serial.println("Receive Failed");
-    } else if (error == OTA_END_ERROR) {
-      Serial.println("End Failed");
-    }
-  });
-
-  ArduinoOTA.begin();
+//Wird aufgerufen, wenn Steuerungssignal fuer Wasserpumpe per MQTT empfangen wird
+void callback(char* topic, byte* payload, unsigned int length) {
+  // Switch on the LED if an 1 was received as first character
+  if ((char)payload[0] == '1') {
+    Serial.println("Wasserpumpe von remote gestartet");
+    pumpStarted = true;
+    waterPump.start(2000);
+  }
 }
