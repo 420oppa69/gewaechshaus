@@ -29,12 +29,13 @@ AccelStepper stepper(AccelStepper::HALF4WIRE, IN1, IN2, IN3, IN4);
 LiquidCrystal_I2C lcd(0x27, lcdColumns, lcdRows);
 unsigned long lastMsg; // Zeitstempel für millis() später
 const int ldr = A0; // Analoger Input des Light Dependent Resistors (Photowiderstand), mehr Licht = höherer analoger Wert
+bool BeleuchtungsAnsteuerung = false; // An/Aus für die Beleuchtungs-Simulation
 
 void setup() {
   // Serielle Kommunikation initialisieren, extra bisschen delay damit erster Print auch sichtbar ist nachdem der ESP erst Müll ausspuckt
   Serial.begin(115200);
   pinMode(BeleuchtungsPin, OUTPUT);
-  digitalWrite(BeleuchtungsPin, LOW);
+  digitalWrite(BeleuchtungsPin, BeleuchtungsAnsteuerung);
   pinMode(StepperEnable, OUTPUT);
   digitalWrite(StepperEnable, LOW);
   pinMode(Endlage, INPUT);
@@ -65,6 +66,7 @@ void setup() {
   digitalWrite(onboardLed, onboardLedStatus);
   // MQTT Server Details aufsetzen
   client.setServer(mqtt_server, 1883);
+  client.setCallback(mqttCallback);
   // DHT Begin und sowas
   dht.begin();
   lcd.setCursor(0, 1);
@@ -78,6 +80,9 @@ void loop() {
   if(!client.connected()) {
     reconnect();
   }
+  // Schalten der Beleuchtung passend zum Subscribe
+  digitalWrite(BeleuchtungsPin, BeleuchtungsAnsteuerung);
+
   // Zeitabstand zwischen gesendeten Nachrichten
   long now = millis();
   if (now - lastMsg > 5000) {
@@ -93,6 +98,7 @@ void loop() {
     // Und sendet hier Nachricht an Broker
     client.publish("gewaechshaus/helligkeit", msg_out);
     lcd.clear();
+
     // Payload Temperatur und Luftfeuchtigkeit
     float temperatur = 0.0;
     float luftfeuchtigkeit = 0.0;
@@ -159,6 +165,7 @@ void reconnect() {
     // Versuche zu verbinden
     if(client.connect(clientId.c_str(), mqtt_user, mqtt_pwd)) {
       Serial.println("Verbunden.");
+      client.subscribe("gewaechshaus/beleuchtung");
     } else {
       Serial.print("Fehler, code=");
       Serial.print(client.state());
@@ -167,6 +174,14 @@ void reconnect() {
   }
 }
 
+// Callback Funktion für Subscriptions
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+  if ((char) payload[0] == '1') {
+    BeleuchtungsAnsteuerung = true;
+  } else {
+    BeleuchtungsAnsteuerung = false;
+  }
+}
 
 
 
