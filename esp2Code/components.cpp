@@ -5,7 +5,7 @@
 #define ATTINY1_HIGH_ADDR 0x78
 #define ATTINY2_LOW_ADDR 0x77
 
-//LED------------------------------------------------------------------------------------------------------
+//-----------------LED----------------------------------------
 LED::LED(uint8_t pin) {
   _pin = pin;
   zustand = LOW;
@@ -14,11 +14,15 @@ LED::LED(uint8_t pin) {
 }
 
 
+//Aufruf im Loop
 void LED::update() {
+  //Ausschalten
   if (_mode == 0) {
     zustand = LOW;
+  //Einschalten
   } else if (_mode == 1) {
     zustand = HIGH;
+  //Blinken
   } else if (_mode == 2) {
     if (millis() - aktMillis >= intervallMillis) {
       aktMillis = millis();
@@ -37,11 +41,12 @@ void LED::setInterval(uint32_t _intervall) {
   intervallMillis = _intervall;
 }
 
-//WaterLevelSensor-----------------------------------------------------------------------------------
+//----------------------------WaterLevelSensor--------------------
 waterLevelSensor::waterLevelSensor(uint8_t threshold) {
   _threshold = threshold;
 }
 
+//Daten per I2C vom Sensor abfragen
 void waterLevelSensor::_getHigh12SectionValue(void) {
   memset(_high_data, 0, sizeof(_high_data));
   Wire.requestFrom(ATTINY1_HIGH_ADDR, 12);
@@ -66,6 +71,7 @@ void waterLevelSensor::_getLow8SectionValue(void) {
   delay(10);
 }
 
+//Sensordaten einlesen
 uint8_t waterLevelSensor::read() {
   int sensorvalue_min = 250;
   int sensorvalue_max = 255;
@@ -74,8 +80,11 @@ uint8_t waterLevelSensor::read() {
   uint32_t touch_val = 0;
   uint8_t trig_section = 0;
 
+  //Daten abfragen
   _getLow8SectionValue();
   _getHigh12SectionValue();
+
+  //Daten auswerten
   for (int i = 0; i < 8; i++) {
     if (_low_data[i] >= sensorvalue_min && _low_data[i] <= sensorvalue_max) {
       low_count++;
@@ -102,18 +111,16 @@ uint8_t waterLevelSensor::read() {
     trig_section++;
     touch_val >>= 1;
   }
-  return trig_section;
+  return trig_section*5;
 }
 
-//LevelDisplay-----------------------------------------------------------------------------------------------
-levelDisplay::levelDisplay(uint8_t pin1, uint8_t pin2, uint8_t pin3, uint8_t pin4, uint8_t pin5) {
+//--------------------------------------LevelDisplay-------------------------------------------------------
+levelDisplay::levelDisplay(uint8_t pin1, uint8_t pin2, uint8_t pin3) {
   _pins[0] = pin1;
   _pins[1] = pin2;
   _pins[2] = pin3;
-  _pins[3] = pin4;
-  _pins[4] = pin5;
 
-  for (int i = 0; i < 5; i++) {
+  for (int i = 0; i < 3; i++) {
     pinMode(_pins[i], OUTPUT);
     digitalWrite(_pins[i], LOW);
   }
@@ -123,18 +130,21 @@ void levelDisplay::setLevel(uint8_t level) {
   _level = level;
 }
 
+//Aufruf im Loop
 void levelDisplay::update() {
   if (_level == 0) {
-    for (int i = 1; i < 5; i++) {
+    //Blinken
+    for (int i = 1; i < 3; i++) {
       digitalWrite(_pins[i], LOW);
     }
     if (millis() - aktMillis >= interval) {
       aktMillis = millis();
-      led1state = !led1state;
+      led1state = !led1state; 
     }
     digitalWrite(_pins[0], led1state);
   } else {
-    for (int i = 0; i < 5; i++) {
+    //Anzahl der aktiven LEDs entsprechen dem Fuellstand
+    for (int i = 0; i < 3; i++) {
       if (i < _level) {
         digitalWrite(_pins[i], HIGH);
       } else {
@@ -144,17 +154,18 @@ void levelDisplay::update() {
   }
 }
 
-//SoilHumSensor
-soilHumSensor::soilHumSensor(uint8_t pin){
+//---------------------------------------SoilHumSensor---------------------------
+soilHumSensor::soilHumSensor(uint8_t pin){--
   _pin = pin;
   pinMode(_pin, INPUT);
 }
 
+//Sensor auslesen
 uint16_t soilHumSensor::read(){
   return analogRead(_pin);
 }
 
-//WaterPump
+//--------------------------------WaterPump------------------------------------------------
 waterPump::waterPump(uint8_t pin){
   _pin = pin;
   pinMode(_pin,OUTPUT);
@@ -181,6 +192,7 @@ void waterPump::handle(){
     if (_enabled == true){
       digitalWrite(_pin, HIGH);
     }
+    //Zeit seit aktivierung ueberpruefen
     if (millis()-_startTime > _durationSetpoint){
       _active = false;
     }
